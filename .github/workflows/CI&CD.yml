@@ -1,0 +1,58 @@
+name: CI/CD
+
+on:
+  push:
+    branches: master
+    tags: v*
+  pull_request:
+    branches: master
+
+env:
+  GO_VERSION: '^1.15.2'
+  GOFLAGS: '-mod=readonly'
+
+jobs:
+
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/setup-go@v2
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/checkout@v2
+
+      - name: Turnstyle
+        uses: softprops/turnstyle@v1
+        with:
+          poll-interval-seconds: 3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@v2
+        with:
+          path: |
+            ~/go/pkg
+            ~/.cache/go-build
+          key: v1-build-${{ runner.os }}-${{ hashFiles('go.mod') }}
+          restore-keys: |
+            v1-build-${{ runner.os }}-
+
+      - run: scripts/build
+
+      - name: Upload to GitHub Container Registry
+        run: |
+          docker login ghcr.io -u '${{ secrets.CR_USER }}' -p '${{ secrets.CR_PAT }}'
+          if echo "$GITHUB_REF" | grep -q '^refs/tags/v'; then
+            TAGS="${GITHUB_REF/refs\/tags\/v}"
+          else
+            #TAGS="$GITHUB_SHA latest"
+            TAGS="latest"
+          fi
+          for TAG in $TAGS; do
+            IMAGE_TAG="ghcr.io/${GITHUB_REPOSITORY,,*}:$TAG"
+            docker tag "$(basename $(go list -m))" "$IMAGE_TAG"
+            docker push "$IMAGE_TAG"
+          done
